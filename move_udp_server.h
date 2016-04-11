@@ -26,16 +26,33 @@
 * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 * POSSIBILITY OF SUCH DAMAGE.
 **/
+#ifndef MOVE_UDP_SERVER_H
+#define MOVE_UDP_SERVER_H
 
+#ifdef WIN32
 #include <windows.h>
 #include <winsock2.h>
 #include <Ws2tcpip.h>
+#include "Synchapi.h"
+#else
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <pthread.h>
+
+#define WINAPI
+typedef unsigned int DWORD;
+typedef void * LPVOID;
+typedef int SOCKET;
+typedef struct sockaddr_in SOCKADDR_IN;
+typedef struct sockaddr SOCKADDR;
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
-#include "Synchapi.h"
 
-#include "psmove_tracker.h"
-#include "psmove.h"
+#include <psmoveapi/psmove_tracker.h>
+#include <psmoveapi/psmove.h>
 
 
 /*
@@ -59,7 +76,11 @@ int format_buttons(PSMove *move);
 * Sends data in format:
 * msgNo, c, tx, ty, tz, ux, uy, trackingMove
 */
+#ifdef WIN32
 DWORD WINAPI run_tracker(LPVOID trackerData);
+#else
+void * run_tracker(LPVOID trackerData);
+#endif
 
 /*
 * \brief Runs the physical move send thread.
@@ -67,14 +88,22 @@ DWORD WINAPI run_tracker(LPVOID trackerData);
 * msgNo, c, currButtons, analogVal, ax, ay, az, gx, gy, gz, 
 * mx, my, mz, orientationEnabled, qw, qx, qy, qz, r, g, b
 */
+#ifdef WIN32
 DWORD WINAPI run_udp_physical(LPVOID trackerData);
+#else
+void * run_udp_physical(LPVOID trackerData);
+#endif
 
 /*
 * \brief Runs the client (receiving side) of the server. Accepts input to change rumble and LEDs on specific moves.
 */
+#ifdef WIN32
 DWORD WINAPI run_udp_recv(LPVOID trackerData);
+#else
+void * run_udp_recv(LPVOID trackerData);
+#endif
 
-void set_up_udp_socket(char ipAddress[], int port, SOCKET *newSocket, SOCKADDR_IN *socketAddress, int recv);
+void set_up_udp_socket(SOCKET *newSocket, SOCKADDR_IN *socketAddress, int recv);
 
 /**
 *Data struct for controller LEDs/Rumble control via UDP.
@@ -135,12 +164,24 @@ typedef struct SendThreadData {
 	SOCKADDR_IN *sendAddress;
 } SENDTHREADDATA, *PSENDTHREADDATA;
 
+
+#ifdef WIN32
 // Showing/hiding tracker info mutex. Protects showTracker.
 HANDLE trackerMutex;
 
 // Protects rumble/led.
 HANDLE controllerMutex;
+#else
+// Showing/hiding tracker info mutex. Protects showTracker.
+extern pthread_mutex_t trackerMutex;
+
+// Protects rumble/led.
+extern pthread_mutex_t controllerMutex;
+#endif
+
 
 #define RUMBLE_TIMEOUT 150
 #define SEND_PORT 23459
 #define RECV_PORT 23460
+
+#endif

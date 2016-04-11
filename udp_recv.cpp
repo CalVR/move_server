@@ -29,7 +29,12 @@
 
 #include "move_udp_server.h"
 
-DWORD WINAPI run_udp_recv(LPVOID recvThreadData) {
+#ifdef WIN32
+DWORD WINAPI run_udp_recv(LPVOID recvThreadData)
+#else
+void * run_udp_recv(LPVOID recvThreadData)
+#endif
+{
 
 	PRECVTHREADDATA _recvThreadData = (PRECVTHREADDATA)recvThreadData;
 	// The recieve address/socket are defined by the user selected network interface.
@@ -44,7 +49,7 @@ DWORD WINAPI run_udp_recv(LPVOID recvThreadData) {
 	ControllerData* controllerData = _recvThreadData->controllerData;
 	char recvMsg[512];
 
-	SOCKADDR_IN* SenderAddr = malloc(sizeof *SenderAddr);
+	SOCKADDR_IN* SenderAddr = (SOCKADDR_IN*)malloc(sizeof *SenderAddr);
 	int SenderAddrSize;
 
 	int c, rumble, resetOrientation, trackerLight, changeLight, r, g, b, changeRumble;
@@ -52,16 +57,21 @@ DWORD WINAPI run_udp_recv(LPVOID recvThreadData) {
 	while (1) {
 		//printf("Waiting on data...\n");
 		SenderAddrSize = 128;
-		int n = recvfrom(*recvSocket, recvMsg, 512, 0, (SOCKADDR *)SenderAddr, &SenderAddrSize);
+		int n = recvfrom(*recvSocket, recvMsg, 512, 0, (SOCKADDR *)SenderAddr, (socklen_t*)&SenderAddrSize);
 		if (n) {
 			// Waiting on 'c'onnect message from client.
 			if (!*okayToSend) {
 				if (recvMsg[0] == 'c') {
 					// Once this message is recieved, we save the sender's address and set up a socket to stream to.
-					char ipString[32];
-					InetNtop(AF_INET, &SenderAddr->sin_addr, ipString, 32);
-					set_up_udp_socket(ipString, SEND_PORT, sendSocket, sendAddress, 0);
-					printf("Client connected. Streaming data to %s:%d\n", ipString, SEND_PORT);
+					//char ipString[32];
+					//InetNtop(AF_INET, &SenderAddr->sin_addr, ipString, 32);
+					//inet_pton(AF_INET, ipString, &sendAddress->sin_addr);
+				
+					sendAddress->sin_addr = SenderAddr->sin_addr;	
+					sendAddress->sin_family = AF_INET;
+					sendAddress->sin_port = htons(SEND_PORT);
+					set_up_udp_socket(sendSocket, sendAddress, 0);
+					printf("Client connected. Streaming data on port %d\n", SEND_PORT);
 					// The other threads now know to stream their data.
 					*okayToSend = 1;
 				}
@@ -72,7 +82,11 @@ DWORD WINAPI run_udp_recv(LPVOID recvThreadData) {
 					sscanf(recvMsg, "d %d %d %d %d %d %d %d %d %d", &c, &changeRumble, &rumble, &resetOrientation, &trackerLight, &changeLight, &r, &g, &b);
 
 					// Protect controller data.
+#ifdef WIN32
 					WaitForSingleObject(controllerMutex, INFINITE);
+#else
+					pthread_mutex_lock(&controllerMutex);
+#endif
 					// Very slight error detection here. Up to the user to send the right packets.
 					if (c >= 0 && c < _recvThreadData->totalConnectedMoves) {
 						if (changeRumble) {
@@ -92,13 +106,21 @@ DWORD WINAPI run_udp_recv(LPVOID recvThreadData) {
 							controllerData[c].b = b;
 						}
 					}
+#ifdef WIN32
 					ReleaseMutex(controllerMutex);
+#else
+					pthread_mutex_unlock(&controllerMutex);
+#endif
 				}
 			}
 		}
 		else {
+#ifdef WIN32
 			int e = WSAGetLastError();
 			printf("Recv error: %d, exiting thread.", e);
+#else
+			printf("Recv error");
+#endif
 			break;
 		}
 		//printf("%d %d %d %d %d %d\n", c, controllerData[c].rumble, controllerData[c].changeLight, controllerData[c].r, controllerData[c].g, controllerData[c].b);

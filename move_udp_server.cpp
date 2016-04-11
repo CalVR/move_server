@@ -28,7 +28,35 @@
  **/
 
 #include "move_udp_server.h"
+
+#include <cstring>
+
+#ifdef WIN32
 #include <conio.h>
+#endif
+
+#ifndef WIN32
+#define INVALID_SOCKET -1
+
+pthread_mutex_t trackerMutex;
+pthread_mutex_t controllerMutex;
+
+// simplified version of kbhit since full functionality is not required
+// http://www.flipcode.com/archives/_kbhit_for_Linux.shtml
+bool kbhit()
+{
+    timeval timeout;
+    fd_set rdset;
+
+    FD_ZERO(&rdset);
+    FD_SET(0, &rdset);
+    timeout.tv_sec  = 0;
+    timeout.tv_usec = 0;
+
+    return select(1, &rdset, NULL, NULL, &timeout);
+}
+
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -63,7 +91,7 @@ int main(int argc, char* argv[])
 		}
 
 		if (psmove_connection_type(controllers[c]) == Conn_USB) printf("WARNING: Controller &d is connected by USB, physical data will be unavailable.");
-		psmove_set_orientation_fusion_type(controllers[c], 3);
+		psmove_set_orientation_fusion_type(controllers[c], (PSMoveOrientation_Fusion_Type)3);
 		psmove_enable_orientation(controllers[c], PSMove_True);
 	}
 
@@ -82,8 +110,9 @@ int main(int argc, char* argv[])
 int udp_move_server(PSMove **controllers)
 {
 	int totalConnectedMoves = psmove_count_connected();
-	ControllerData* controllerData = (ControllerData*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, totalConnectedMoves * sizeof(ControllerData));
-	
+	//ControllerData* controllerData = (ControllerData*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, totalConnectedMoves * sizeof(ControllerData));
+	ControllerData* controllerData = new ControllerData[totalConnectedMoves];
+
 	// Initialise controller data
 	for (int c = 0; c < totalConnectedMoves; c++) {
 		controllerData[c].r = 0;
@@ -99,13 +128,16 @@ int udp_move_server(PSMove **controllers)
 		controllerData[c].trackerLight = 0;
 	}
 
-	WSADATA wsaData;
 	int okayToSend = 0;
 	SOCKET udpSendSocket, udpRecvSocket;
-	SOCKADDR_IN *localSendAddress = malloc(sizeof *localSendAddress);
-	SOCKADDR_IN *localRecvAddress = malloc(sizeof *localRecvAddress);
+	//SOCKADDR_IN *localSendAddress = malloc(sizeof *localSendAddress);
+	//SOCKADDR_IN *localRecvAddress = malloc(sizeof *localRecvAddress);
+	SOCKADDR_IN *localSendAddress = new SOCKADDR_IN;
+	SOCKADDR_IN *localRecvAddress = new SOCKADDR_IN;
 
+#ifdef WIN32
 	// Start up WSA (Windows Socket API)
+	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != NO_ERROR)
 	{
 		printf("Socket Initialization: Error with WSAStartup\n");
@@ -168,9 +200,18 @@ int udp_move_server(PSMove **controllers)
 	}
 
 	printf("------------\n");
+	
+	inet_pton(AF_INET, recv_address, &localRecvAddress->sin_addr);
+#else
+	localRecvAddress->sin_addr.s_addr = htonl(INADDR_ANY);
+#endif
+
+
+	localRecvAddress->sin_family = AF_INET;
+	localRecvAddress->sin_port = htons(RECV_PORT);
 
 	// Create the receiving UDP socket. 
-	set_up_udp_socket(recv_address, RECV_PORT, &udpRecvSocket, localRecvAddress, 1);
+	set_up_udp_socket(&udpRecvSocket, localRecvAddress, 1);
 
 	// Attempt to initialise the tracker, with custom settings.
 	PSMoveTrackerSettings settings;
@@ -188,9 +229,14 @@ int udp_move_server(PSMove **controllers)
 	int tracking_enabled = 0;
 	int show_tracker = 0;
 	int finishThread = 0;
-	HANDLE tracker_thread;
 	PSMove* move;
 	int currPoll;
+
+#ifdef WIN32
+	HANDLE tracker_thread;
+#else
+	pthread_t tracker_thread;
+#endif
 
 	// Check if the tracker was successfully initialised.
 	if (tracker) {
@@ -228,6 +274,7 @@ int udp_move_server(PSMove **controllers)
 			}
 		}
 
+#ifdef WIN32
 		// Create the tracker mutex.
 		trackerMutex = CreateMutex(NULL, FALSE, NULL);             
 
@@ -236,9 +283,13 @@ int udp_move_server(PSMove **controllers)
 			printf("CreateMutex error (trackerMutex): %d\n", GetLastError());
 			return 0;
 		}
+#else
+		pthread_mutex_init(&trackerMutex,NULL);
+#endif
 
 		// Create the trackerData struct to send to the tracking thread.
-		PTRACKERDATA trackerData = (PTRACKERDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(TRACKERDATA));
+		//PTRACKERDATA trackerData = (PTRACKERDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(TRACKERDATA));
+		PTRACKERDATA trackerData = new TRACKERDATA;
 		trackerData->controllers = controllers;
 		trackerData->tracker = tracker;
 		trackerData->totalConnectedMoves = totalConnectedMoves;
@@ -248,10 +299,19 @@ int udp_move_server(PSMove **controllers)
 		trackerData->udpSocket = &udpSendSocket;
 		trackerData->okayToSend = &okayToSend;
 
+#ifdef WIN32
 		DWORD threadID;
 		// Create the thread and run on creation.
 		tracker_thread = CreateThread(NULL, 0, run_tracker, trackerData, 0, &threadID);
 		SetThreadPriority(tracker_thread, THREAD_PRIORITY_HIGHEST);
+#else
+		pthread_attr_t attr;
+
+		pthread_attr_init(&attr);
+		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+		pthread_create(&tracker_thread,&attr,run_tracker,(void*)trackerData);
+		pthread_attr_destroy(&attr);
+#endif
 	}
 	else {
 		printf("WARNING: Couldn't initialise tracker. Only physical move data will be sent. \n");
@@ -259,6 +319,7 @@ int udp_move_server(PSMove **controllers)
 
 	// ----- Initialising the 'Receive Thread' -----
 
+#ifdef WIN32
 	// Create the controller data mutex.
 	controllerMutex = CreateMutex(NULL, FALSE, NULL);           
 	if (controllerMutex == NULL)
@@ -266,9 +327,14 @@ int udp_move_server(PSMove **controllers)
 		printf("CreateMutex error (controllerMutex): %d\n", GetLastError());
 		return 0;
 	}
+#else
+	pthread_mutex_init(&controllerMutex,NULL);
+#endif
 
 	// Create the recvData struct to send to the receive thread.
-	PRECVTHREADDATA recvData = (PRECVTHREADDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(RECVTHREADDATA));
+	//PRECVTHREADDATA recvData = (PRECVTHREADDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(RECVTHREADDATA));
+	PRECVTHREADDATA recvData = new RECVTHREADDATA;
+	
 	recvData->recvAddress = localRecvAddress;
 	recvData->udpSocket = &udpRecvSocket;
 	recvData->finishThread = &finishThread;
@@ -278,14 +344,25 @@ int udp_move_server(PSMove **controllers)
 	recvData->udpSocketOut = &udpSendSocket;
 	recvData->sendAddress = localSendAddress;
 
+#ifdef WIN32
 	DWORD recvThreadID;
 	// Create the recv thread and run straight away.
 	HANDLE recv_thread = CreateThread(NULL, 0, run_udp_recv, recvData, 0, &recvThreadID);
+#else
+	pthread_attr_t attr;
+
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
+	pthread_t recv_thread;
+	pthread_create(&recv_thread,&attr,run_udp_recv,(void*)recvData);
+#endif
 
 	// ----- Initialising the 'Send Physical Thread' -----
 
 	// Create the sendData struct to send to the 'physical send' thread.
-	PSENDTHREADDATA sendData = (PSENDTHREADDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(SENDTHREADDATA));
+	//PSENDTHREADDATA sendData = (PSENDTHREADDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(SENDTHREADDATA));
+	PSENDTHREADDATA sendData = new SENDTHREADDATA;
 	sendData->controllerData = controllerData;
 	sendData->totalConnectedMoves = totalConnectedMoves;
 	sendData->controllers = controllers;
@@ -295,9 +372,15 @@ int udp_move_server(PSMove **controllers)
 	sendData->okayToSend = &okayToSend;
 	sendData->trackingEnabled = &tracking_enabled;
 
+#ifdef WIN32
 	DWORD sendThreadID;
 	// Create the 'send physical' thread and suspend it until we know who we're sending to.
 	HANDLE send_thread = CreateThread(NULL, 0, run_udp_physical, sendData, 0, &sendThreadID);
+#else
+	pthread_t send_thread;
+	pthread_create(&send_thread,&attr,run_udp_physical,(void*)sendData);
+	pthread_attr_destroy(&attr);
+#endif
 
 	printf("------------\nServer Started. (Waiting on client connection.)\n");
 
@@ -332,9 +415,15 @@ int udp_move_server(PSMove **controllers)
 				else if (strcmp(s, "showtracker") == 0) {
 					if (tracking_enabled) {
 						// Need to tell the tracking thread to annotate and show the tracking footage.
+#ifdef WIN32
 						WaitForSingleObject(trackerMutex, INFINITE);
 						show_tracker = 1;
 						ReleaseMutex(trackerMutex);
+#else
+						pthread_mutex_lock(&trackerMutex);
+						show_tracker = 1;
+						pthread_mutex_unlock(&trackerMutex);
+#endif
 					}
 					else {
 						printf("Error: Tracker not enabled.\n");
@@ -342,9 +431,15 @@ int udp_move_server(PSMove **controllers)
 				}
 				else if (strcmp(s, "hidetracker") == 0) {
 					if (tracking_enabled) {
+#ifdef WIN32
 						WaitForSingleObject(trackerMutex, INFINITE);
 						show_tracker = 0;
 						ReleaseMutex(trackerMutex);
+#else
+						pthread_mutex_lock(&trackerMutex);
+						show_tracker = 0;
+						pthread_mutex_unlock(&trackerMutex);
+#endif
 					}
 					else {
 						printf("Error: Tracker not enabled.\n");
@@ -382,29 +477,41 @@ int udp_move_server(PSMove **controllers)
 	}
 	finishThread = 1;
 	if (tracking_enabled) {
+#ifdef WIN32
 		WaitForSingleObject(tracker_thread, INFINITE);
 		CloseHandle(tracker_thread);
+#else
+		void * status;
+		pthread_join(tracker_thread,&status);
+#endif
 		psmove_tracker_free(tracker);
 		printf("Thread closed.\n");
 	}
 	return 0;
 }
 
-void set_up_udp_socket(char ipAddress[], int port, SOCKET *newSocket, SOCKADDR_IN *socketAddress, int recv) {
+void network_error_exit(int code)
+{
+#ifdef WIN32
+    system("pause");
+    WSACleanup();
+#endif
+    exit(code);
+}
+
+void set_up_udp_socket(SOCKET *newSocket, SOCKADDR_IN *socketAddress, int recv) {
 	// Create the UDP socket.
 	*newSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (*newSocket == INVALID_SOCKET)
 	{
 		printf("Socket Initialization: Error creating socket\n");
-		system("pause");
-		WSACleanup();
-		exit(11);
+		network_error_exit(11);
 	}
 
 	// Set up the local address.
-	socketAddress->sin_family = AF_INET;
-	inet_pton(AF_INET, ipAddress, &socketAddress->sin_addr);
-	socketAddress->sin_port = htons(port);
+	//socketAddress->sin_family = AF_INET;
+	//inet_pton(AF_INET, ipAddress, &socketAddress->sin_addr);
+	//socketAddress->sin_port = htons(port);
 
 	// Finally, connect the socket ready for sending data.
 	// (Note that this really isn't needed for sending data, as you can't 'connect' with UDP)
@@ -412,17 +519,13 @@ void set_up_udp_socket(char ipAddress[], int port, SOCKET *newSocket, SOCKADDR_I
 	if (!recv) {
 		if (connect(*newSocket, (struct sockaddr *)socketAddress, sizeof(*socketAddress)) < 0) {
 			printf("Error: Send Socket failed to connect\n");
-			system("pause");
-			WSACleanup();
-			exit(14);
+			network_error_exit(14);
 		}
 	}
 	else {
 		if (bind(*newSocket, (struct sockaddr *)socketAddress, sizeof(*socketAddress)) < 0) {
 			printf("Error: Recv Socket failed to bind\n");
-			system("pause");
-			WSACleanup();
-			exit(14);
+			network_error_exit(14);
 		}
 	}
 }

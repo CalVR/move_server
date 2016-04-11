@@ -30,7 +30,12 @@
 #include "opencv2/core/core_c.h"
 #include "opencv2/highgui/highgui_c.h"
 
-DWORD WINAPI run_tracker(LPVOID trackerData) {
+#ifdef WIN32
+DWORD WINAPI run_tracker(LPVOID trackerData)
+#else
+void * run_tracker(LPVOID trackerData)
+#endif
+{
 
 	PTRACKERDATA _trackerData = (PTRACKERDATA)trackerData;
 
@@ -93,7 +98,7 @@ DWORD WINAPI run_tracker(LPVOID trackerData) {
 			}
 			else {
 				// While we aren't sending, the physical thread doesn't update. We temporarily do it here.
-				char r, g, b;
+				unsigned char r, g, b;
 				psmove_tracker_get_color(tracker, move, &r, &g, &b);
 				psmove_set_leds(move, r, g, b);
 				psmove_update_leds(move);
@@ -102,7 +107,11 @@ DWORD WINAPI run_tracker(LPVOID trackerData) {
 		if (*okayToSend) posUpdateNumber++;
 
 		// Wait for the main menu to decide showTracker's value.
+#ifdef WIN32
 		WaitForSingleObject(trackerMutex, INFINITE);
+#else
+		pthread_mutex_lock(&trackerMutex);
+#endif
 		if (*showTracker == 1) {
 			// Show an annotated stream of the tracking footage.
 			psmove_tracker_annotate(tracker);
@@ -112,7 +121,11 @@ DWORD WINAPI run_tracker(LPVOID trackerData) {
 				cvWaitKey(1);
 			}
 		}
+#ifdef WIN32
 		ReleaseMutex(trackerMutex);
+#else
+		pthread_mutex_unlock(&trackerMutex);
+#endif
 
 		if (*finishThread){
 			break;

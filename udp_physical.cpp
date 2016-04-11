@@ -27,11 +27,20 @@
  * POSSIBILITY OF SUCH DAMAGE.
  **/
 
-
 #include "move_udp_server.h"
 
-DWORD WINAPI run_udp_physical(LPVOID physicalData) {
+#include <cstring>
 
+#ifndef WIN32
+#include <unistd.h>
+#endif
+
+#ifdef WIN32
+DWORD WINAPI run_udp_physical(LPVOID physicalData)
+#else
+void * run_udp_physical(LPVOID physicalData)
+#endif
+{
 	PSENDTHREADDATA _physicalData = (PSENDTHREADDATA)physicalData;
 
 	// ----- physicalData variables -----
@@ -55,7 +64,6 @@ DWORD WINAPI run_udp_physical(LPVOID physicalData) {
 	int msgNo = 0;
 	int c;
 	float ax, ay, az, gx, gy, gz, mx, my, mz, qx, qy, qz, qw;
-	unsigned char r, g, b;
 	int server_length = sizeof(struct sockaddr_in);
 	char sendMes[512];
 
@@ -70,7 +78,11 @@ DWORD WINAPI run_udp_physical(LPVOID physicalData) {
 				currPoll = psmove_poll(move);
 				if (currPoll) {
 					// Controller mutex
+#ifdef WIN32
 					WaitForSingleObject(controllerMutex, INFINITE);
+#else
+					pthread_mutex_lock(&controllerMutex);
+#endif
 					// Set the move light to the tracker set value.
 					if (controllerData[c].trackerLight) {
 						controllerData[c].trackerLight = 0;
@@ -107,7 +119,11 @@ DWORD WINAPI run_udp_physical(LPVOID physicalData) {
 						psmove_reset_orientation(move);
 						printf("\nController %d has been calibrated.\n >", c);
 					}
+#ifdef WIN32
 					ReleaseMutex(controllerMutex);
+#else
+					pthread_mutex_unlock(&controllerMutex);
+#endif
 					// Controller mutex end
 
 					// Read values from the controller.
@@ -116,7 +132,6 @@ DWORD WINAPI run_udp_physical(LPVOID physicalData) {
 					psmove_get_accelerometer_frame(move, Frame_SecondHalf, &ax, &ay, &az);
 					psmove_get_gyroscope_frame(move, Frame_SecondHalf, &gx, &gy, &gz);
 					psmove_get_magnetometer_vector(move, &mx, &my, &mz);
-					psmove_get_leds(move, &r, &g, &b);
 					psmove_update_leds(move);
 
 					// Check for orientation and get new values
@@ -130,7 +145,7 @@ DWORD WINAPI run_udp_physical(LPVOID physicalData) {
 					// Stream data for controller to the client.
 					sprintf(sendMes, "a %d %d %d %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %d %.3f %.3f %.3f %.3f %d %d %d",
 						msgNo, c, currButtons, analogVal, ax, ay, az, gx, gy, gz, mx, my, mz, orientationEnabled,
-						qw, qx, qy, qz, r, g, b);
+						qw, qx, qy, qz, controllerData[c].r, controllerData[c].g, controllerData[c].b);
 					//printf("%s\n", sendMes);
 					sendto(*udpSocket, sendMes, strlen(sendMes), 0, (SOCKADDR*)sendAddress, server_length);
 					//sprintf(sendMes, "%.3f %.3f %.3f", mx, my, mz);
@@ -138,7 +153,12 @@ DWORD WINAPI run_udp_physical(LPVOID physicalData) {
 				}
 			}
 		}
+#ifdef WIN32
 		Sleep(10);
+#else
+		usleep(10000);
+#endif
+
 		msgNo++;
 	}
 	
