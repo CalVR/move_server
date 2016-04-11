@@ -30,6 +30,7 @@
 #define MOVE_UDP_SERVER_H
 
 #ifdef WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winsock2.h>
 #include <Ws2tcpip.h>
@@ -167,10 +168,10 @@ typedef struct SendThreadData {
 
 #ifdef WIN32
 // Showing/hiding tracker info mutex. Protects showTracker.
-HANDLE trackerMutex;
+extern HANDLE trackerMutex;
 
 // Protects rumble/led.
-HANDLE controllerMutex;
+extern HANDLE controllerMutex;
 #else
 // Showing/hiding tracker info mutex. Protects showTracker.
 extern pthread_mutex_t trackerMutex;

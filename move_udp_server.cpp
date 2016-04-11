@@ -33,6 +33,12 @@
 
 #ifdef WIN32
 #include <conio.h>
+
+#pragma comment (lib, "Ws2_32.lib")
+
+HANDLE trackerMutex;
+HANDLE controllerMutex;
+
 #endif
 
 #ifndef WIN32

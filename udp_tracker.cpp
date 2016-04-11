@@ -27,8 +27,8 @@
  **/
 
 #include "move_udp_server.h"
-#include "opencv2/core/core_c.h"
-#include "opencv2/highgui/highgui_c.h"
+#include <opencv2/core/core_c.h>
+#include <opencv2/highgui/highgui_c.h>
 
 #ifdef WIN32
 DWORD WINAPI run_tracker(LPVOID trackerData)
