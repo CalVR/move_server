@@ -28,15 +28,19 @@
  **/
 
 #include "move_udp_server.h"
+#include "udp_recv.h"
 
-#ifdef WIN32
-DWORD WINAPI run_udp_recv(LPVOID recvThreadData)
-#else
-void * run_udp_recv(LPVOID recvThreadData)
-#endif
+UDP_Recv::UDP_Recv(PRECVTHREADDATA data) : Thread()
 {
+    _recvThreadData = data;
+}
 
-	PRECVTHREADDATA _recvThreadData = (PRECVTHREADDATA)recvThreadData;
+UDP_Recv::~UDP_Recv()
+{
+}
+
+void UDP_Recv::run()
+{
 	// The recieve address/socket are defined by the user selected network interface.
 	SOCKADDR_IN* recvAddress = _recvThreadData->recvAddress;
 	SOCKET* recvSocket = _recvThreadData->udpSocket;
@@ -45,7 +49,6 @@ void * run_udp_recv(LPVOID recvThreadData)
 	SOCKADDR_IN* sendAddress = _recvThreadData->sendAddress;
 	SOCKET* sendSocket = _recvThreadData->udpSocketOut;
 
-	int* finishThread = _recvThreadData->finishThread;
 	ControllerData* controllerData = _recvThreadData->controllerData;
 	char recvMsg[512];
 
@@ -82,11 +85,8 @@ void * run_udp_recv(LPVOID recvThreadData)
 					sscanf(recvMsg, "d %d %d %d %d %d %d %d %d %d", &c, &changeRumble, &rumble, &resetOrientation, &trackerLight, &changeLight, &r, &g, &b);
 
 					// Protect controller data.
-#ifdef WIN32
-					WaitForSingleObject(controllerMutex, INFINITE);
-#else
-					pthread_mutex_lock(&controllerMutex);
-#endif
+					controllerMutex->lock();
+
 					// Very slight error detection here. Up to the user to send the right packets.
 					if (c >= 0 && c < _recvThreadData->totalConnectedMoves) {
 						if (changeRumble) {
@@ -106,11 +106,7 @@ void * run_udp_recv(LPVOID recvThreadData)
 							controllerData[c].b = b;
 						}
 					}
-#ifdef WIN32
-					ReleaseMutex(controllerMutex);
-#else
-					pthread_mutex_unlock(&controllerMutex);
-#endif
+					controllerMutex->unlock();
 				}
 			}
 		}
@@ -125,10 +121,11 @@ void * run_udp_recv(LPVOID recvThreadData)
 		}
 		//printf("%d %d %d %d %d %d\n", c, controllerData[c].rumble, controllerData[c].changeLight, controllerData[c].r, controllerData[c].g, controllerData[c].b);
 
-		// TODO: Implement a non-blocking method to close this thread.
-		if (*finishThread){
+		_quitMutex->lock();
+		if (_quit){
+			_quitMutex->unlock();
 			break;
 		}
+		_quitMutex->unlock();
 	}
-	return 0;
 }

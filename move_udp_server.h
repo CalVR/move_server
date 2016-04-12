@@ -29,17 +29,19 @@
 #ifndef MOVE_UDP_SERVER_H
 #define MOVE_UDP_SERVER_H
 
+#include "Mutex.hpp"
+
 #ifdef WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winsock2.h>
 #include <Ws2tcpip.h>
 #include "Synchapi.h"
+
 #else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <pthread.h>
 
 #define WINAPI
 typedef unsigned int DWORD;
@@ -51,58 +53,11 @@ typedef struct sockaddr SOCKADDR;
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <vector>
 
 #include <psmoveapi/psmove_tracker.h>
 #include <psmoveapi/psmove.h>
 
-
-/*
-* \brief Sets up a simple UDP server which locally sends out PSMove data.
-* Sent in two formats: a Buttons Analogue ax ay az gx gy gz mx my mz
-*					 : b tx ty tz currentlyTracking
-*/
-int udp_move_server(PSMove **controllers);
-/**
-* \brief Convert current button presses to easy to send UDP format.
-*
-* Remember to call after psmove_poll(move).
-*  X - Sq - Tri - O - Move - St - Se - PS
-*
-* \return value between 0-255, use bitwise operations to get button presses.
-**/
-int format_buttons(PSMove *move);
-
-/*
-* \brief Runs the tracking algorithm on a separate thread. (Allows quick updates of move buttons)
-* Sends data in format:
-* msgNo, c, tx, ty, tz, ux, uy, trackingMove
-*/
-#ifdef WIN32
-DWORD WINAPI run_tracker(LPVOID trackerData);
-#else
-void * run_tracker(LPVOID trackerData);
-#endif
-
-/*
-* \brief Runs the physical move send thread.
-* Sends data in format:
-* msgNo, c, currButtons, analogVal, ax, ay, az, gx, gy, gz, 
-* mx, my, mz, orientationEnabled, qw, qx, qy, qz, r, g, b
-*/
-#ifdef WIN32
-DWORD WINAPI run_udp_physical(LPVOID trackerData);
-#else
-void * run_udp_physical(LPVOID trackerData);
-#endif
-
-/*
-* \brief Runs the client (receiving side) of the server. Accepts input to change rumble and LEDs on specific moves.
-*/
-#ifdef WIN32
-DWORD WINAPI run_udp_recv(LPVOID trackerData);
-#else
-void * run_udp_recv(LPVOID trackerData);
-#endif
 
 void set_up_udp_socket(SOCKET *newSocket, SOCKADDR_IN *socketAddress, int recv);
 
@@ -131,7 +86,6 @@ typedef struct TrackerData {
 	PSMove **controllers;
 	int totalConnectedMoves;
 	int *showTracker;
-	int *finishThread;
 	int *okayToSend;
 	SOCKET *udpSocket;
 	SOCKADDR_IN *sendAddress;
@@ -143,7 +97,6 @@ typedef struct TrackerData {
 typedef struct RecvThreadData {
 	int totalConnectedMoves;
 	ControllerData *controllerData;
-	int *finishThread;
 	SOCKET *udpSocket;
 	SOCKADDR_IN *recvAddress;
 	int *okayToSend;
@@ -158,28 +111,32 @@ typedef struct SendThreadData {
 	int totalConnectedMoves;
 	PSMove **controllers;
 	ControllerData *controllerData;
-	int *finishThread;
 	int *okayToSend;
 	int *trackingEnabled;
 	SOCKET *udpSocket;
 	SOCKADDR_IN *sendAddress;
 } SENDTHREADDATA, *PSENDTHREADDATA;
 
+struct MoveState
+{
+    unsigned int buttons;
+    float qw, qx, qy, qz;
+    float x, y, z;
+    Mutex * lock;
+};
 
-#ifdef WIN32
+/*
+* \brief Sets up a simple UDP server which locally sends out PSMove data.
+* Sent in two formats: a Buttons Analogue ax ay az gx gy gz mx my mz
+*					 : b tx ty tz currentlyTracking
+*/
+int udp_move_server(PSMove **controllers, std::vector<MoveState*> & moveStateList);
+
 // Showing/hiding tracker info mutex. Protects showTracker.
-extern HANDLE trackerMutex;
+extern Mutex * trackerMutex;
 
 // Protects rumble/led.
-extern HANDLE controllerMutex;
-#else
-// Showing/hiding tracker info mutex. Protects showTracker.
-extern pthread_mutex_t trackerMutex;
-
-// Protects rumble/led.
-extern pthread_mutex_t controllerMutex;
-#endif
-
+extern Mutex * controllerMutex;
 
 #define RUMBLE_TIMEOUT 150
 #define SEND_PORT 23459

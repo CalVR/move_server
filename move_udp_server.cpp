@@ -28,24 +28,26 @@
  **/
 
 #include "move_udp_server.h"
+#include "udp_tracker.h"
+#include "udp_recv.h"
+#include "udp_physical.h"
+
+#ifdef WITH_VRPN
+#include "VRPNServer.h"
+#endif
 
 #include <cstring>
+#include <vector>
 
 #ifdef WIN32
 #include <conio.h>
 
 #pragma comment (lib, "Ws2_32.lib")
 
-HANDLE trackerMutex;
-HANDLE controllerMutex;
-
 #endif
 
 #ifndef WIN32
 #define INVALID_SOCKET -1
-
-pthread_mutex_t trackerMutex;
-pthread_mutex_t controllerMutex;
 
 // simplified version of kbhit since full functionality is not required
 // http://www.flipcode.com/archives/_kbhit_for_Linux.shtml
@@ -64,11 +66,25 @@ bool kbhit()
 
 #endif
 
+Mutex * trackerMutex = NULL;
+Mutex * controllerMutex = NULL;
+
+MoveState * createMoveState()
+{
+    MoveState * ms = new MoveState;
+    ms->buttons = 0;
+    ms->x = ms->y = ms->z = 0.0;
+    ms->qx = ms->qy = ms->qw = 0.0;
+    ms->qz = 1.0;
+    ms->lock = new Mutex();
+}
+
 int main(int argc, char* argv[])
 {
     int totalConnectedMoves;
 	PSMove **controllers;
 	int c;
+    std::vector<MoveState*> moveStateList;
 
     if (!psmove_init(PSMOVE_CURRENT_VERSION)) {
         fprintf(stderr, "PS Move API init failed (wrong version?)\n");
@@ -99,10 +115,12 @@ int main(int argc, char* argv[])
 		if (psmove_connection_type(controllers[c]) == Conn_USB) printf("WARNING: Controller &d is connected by USB, physical data will be unavailable.");
 		psmove_set_orientation_fusion_type(controllers[c], (PSMoveOrientation_Fusion_Type)3);
 		psmove_enable_orientation(controllers[c], PSMove_True);
+
+	    moveStateList.push_back(createMoveState());
 	}
 
 	// Run the server. This will block until the server is exited.
-	udp_move_server(controllers);
+	udp_move_server(controllers,moveStateList);
     
 	// Shut down the api.
 	for (c = 0; c < totalConnectedMoves; c++) {
@@ -113,7 +131,7 @@ int main(int argc, char* argv[])
     return 0;
 }
 
-int udp_move_server(PSMove **controllers)
+int udp_move_server(PSMove **controllers, std::vector<MoveState*> & moveStateList)
 {
 	int totalConnectedMoves = psmove_count_connected();
 	//ControllerData* controllerData = (ControllerData*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, totalConnectedMoves * sizeof(ControllerData));
@@ -234,15 +252,10 @@ int udp_move_server(PSMove **controllers)
 	int c;
 	int tracking_enabled = 0;
 	int show_tracker = 0;
-	int finishThread = 0;
 	PSMove* move;
 	int currPoll;
 
-#ifdef WIN32
-	HANDLE tracker_thread;
-#else
-	pthread_t tracker_thread;
-#endif
+	UDP_Tracker * tracker_thread = NULL;
 
 	// Check if the tracker was successfully initialised.
 	if (tracker) {
@@ -280,18 +293,12 @@ int udp_move_server(PSMove **controllers)
 			}
 		}
 
-#ifdef WIN32
-		// Create the tracker mutex.
-		trackerMutex = CreateMutex(NULL, FALSE, NULL);             
-
-		if (trackerMutex == NULL)
+		trackerMutex = new Mutex();
+		if(trackerMutex->error())
 		{
-			printf("CreateMutex error (trackerMutex): %d\n", GetLastError());
-			return 0;
+		    printf("Error creating trackerMutex.\n");
+		    return 1;
 		}
-#else
-		pthread_mutex_init(&trackerMutex,NULL);
-#endif
 
 		// Create the trackerData struct to send to the tracking thread.
 		//PTRACKERDATA trackerData = (PTRACKERDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(TRACKERDATA));
@@ -300,42 +307,24 @@ int udp_move_server(PSMove **controllers)
 		trackerData->tracker = tracker;
 		trackerData->totalConnectedMoves = totalConnectedMoves;
 		trackerData->showTracker = &show_tracker;
-		trackerData->finishThread = &finishThread;
 		trackerData->sendAddress = localSendAddress;
 		trackerData->udpSocket = &udpSendSocket;
 		trackerData->okayToSend = &okayToSend;
 
-#ifdef WIN32
-		DWORD threadID;
-		// Create the thread and run on creation.
-		tracker_thread = CreateThread(NULL, 0, run_tracker, trackerData, 0, &threadID);
-		SetThreadPriority(tracker_thread, THREAD_PRIORITY_HIGHEST);
-#else
-		pthread_attr_t attr;
-
-		pthread_attr_init(&attr);
-		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-		pthread_create(&tracker_thread,&attr,run_tracker,(void*)trackerData);
-		pthread_attr_destroy(&attr);
-#endif
+		tracker_thread = new UDP_Tracker(trackerData, moveStateList);
+		tracker_thread->startThread();
 	}
 	else {
 		printf("WARNING: Couldn't initialise tracker. Only physical move data will be sent. \n");
 	}
 
 	// ----- Initialising the 'Receive Thread' -----
-
-#ifdef WIN32
-	// Create the controller data mutex.
-	controllerMutex = CreateMutex(NULL, FALSE, NULL);           
-	if (controllerMutex == NULL)
+	controllerMutex = new Mutex();
+	if(controllerMutex->error())
 	{
-		printf("CreateMutex error (controllerMutex): %d\n", GetLastError());
-		return 0;
+	    printf("Error creating controllerMutex.\n");
+	    return 1;
 	}
-#else
-	pthread_mutex_init(&controllerMutex,NULL);
-#endif
 
 	// Create the recvData struct to send to the receive thread.
 	//PRECVTHREADDATA recvData = (PRECVTHREADDATA)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(RECVTHREADDATA));
@@ -343,26 +332,14 @@ int udp_move_server(PSMove **controllers)
 	
 	recvData->recvAddress = localRecvAddress;
 	recvData->udpSocket = &udpRecvSocket;
-	recvData->finishThread = &finishThread;
 	recvData->totalConnectedMoves = totalConnectedMoves;
 	recvData->controllerData = controllerData;
 	recvData->okayToSend = &okayToSend;
 	recvData->udpSocketOut = &udpSendSocket;
 	recvData->sendAddress = localSendAddress;
 
-#ifdef WIN32
-	DWORD recvThreadID;
-	// Create the recv thread and run straight away.
-	HANDLE recv_thread = CreateThread(NULL, 0, run_udp_recv, recvData, 0, &recvThreadID);
-#else
-	pthread_attr_t attr;
-
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-	pthread_t recv_thread;
-	pthread_create(&recv_thread,&attr,run_udp_recv,(void*)recvData);
-#endif
+	UDP_Recv * recv_thread = new UDP_Recv(recvData);
+	recv_thread->startThread();
 
 	// ----- Initialising the 'Send Physical Thread' -----
 
@@ -372,20 +349,17 @@ int udp_move_server(PSMove **controllers)
 	sendData->controllerData = controllerData;
 	sendData->totalConnectedMoves = totalConnectedMoves;
 	sendData->controllers = controllers;
-	sendData->finishThread = &finishThread;
 	sendData->udpSocket = &udpSendSocket;
 	sendData->sendAddress = localSendAddress;
 	sendData->okayToSend = &okayToSend;
 	sendData->trackingEnabled = &tracking_enabled;
 
-#ifdef WIN32
-	DWORD sendThreadID;
-	// Create the 'send physical' thread and suspend it until we know who we're sending to.
-	HANDLE send_thread = CreateThread(NULL, 0, run_udp_physical, sendData, 0, &sendThreadID);
-#else
-	pthread_t send_thread;
-	pthread_create(&send_thread,&attr,run_udp_physical,(void*)sendData);
-	pthread_attr_destroy(&attr);
+	UDP_Physical * send_thread = new UDP_Physical(sendData,moveStateList);
+	send_thread->startThread();
+
+#ifdef WITH_VRPN
+	VRPNServer * vrpn = new VRPNServer(moveStateList, vrpn_create_server_connection(":VRPN_PORT",NULL,NULL));
+	vrpn->startThread();
 #endif
 
 	printf("------------\nServer Started. (Waiting on client connection.)\n");
@@ -421,15 +395,9 @@ int udp_move_server(PSMove **controllers)
 				else if (strcmp(s, "showtracker") == 0) {
 					if (tracking_enabled) {
 						// Need to tell the tracking thread to annotate and show the tracking footage.
-#ifdef WIN32
-						WaitForSingleObject(trackerMutex, INFINITE);
+						trackerMutex->lock();
 						show_tracker = 1;
-						ReleaseMutex(trackerMutex);
-#else
-						pthread_mutex_lock(&trackerMutex);
-						show_tracker = 1;
-						pthread_mutex_unlock(&trackerMutex);
-#endif
+						trackerMutex->unlock();
 					}
 					else {
 						printf("Error: Tracker not enabled.\n");
@@ -437,15 +405,9 @@ int udp_move_server(PSMove **controllers)
 				}
 				else if (strcmp(s, "hidetracker") == 0) {
 					if (tracking_enabled) {
-#ifdef WIN32
-						WaitForSingleObject(trackerMutex, INFINITE);
+						trackerMutex->lock();
 						show_tracker = 0;
-						ReleaseMutex(trackerMutex);
-#else
-						pthread_mutex_lock(&trackerMutex);
-						show_tracker = 0;
-						pthread_mutex_unlock(&trackerMutex);
-#endif
+						trackerMutex->unlock();
 					}
 					else {
 						printf("Error: Tracker not enabled.\n");
@@ -481,15 +443,17 @@ int udp_move_server(PSMove **controllers)
 			}
 		}
 	}
-	finishThread = 1;
-	if (tracking_enabled) {
-#ifdef WIN32
-		WaitForSingleObject(tracker_thread, INFINITE);
-		CloseHandle(tracker_thread);
-#else
-		void * status;
-		pthread_join(tracker_thread,&status);
+	recv_thread->join();
+	delete recv_thread;
+	send_thread->join();
+	delete send_thread;
+#ifdef WITH_VRPN
+	vrpn->join();
+	delete vrpn;
 #endif
+	if (tracking_enabled) {
+		tracker_thread->join();
+		delete tracker_thread;
 		psmove_tracker_free(tracker);
 		printf("Thread closed.\n");
 	}

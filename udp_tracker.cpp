@@ -26,18 +26,22 @@
  * POSSIBILITY OF SUCH DAMAGE.
  **/
 
-#include "move_udp_server.h"
+#include "udp_tracker.h"
 #include <opencv2/core/core_c.h>
 #include <opencv2/highgui/highgui_c.h>
 
-#ifdef WIN32
-DWORD WINAPI run_tracker(LPVOID trackerData)
-#else
-void * run_tracker(LPVOID trackerData)
-#endif
+UDP_Tracker::UDP_Tracker(PTRACKERDATA data, std::vector<MoveState*> & stateList) : Thread()
 {
+    _trackerData = data;
+    _stateList = stateList;
+}
 
-	PTRACKERDATA _trackerData = (PTRACKERDATA)trackerData;
+UDP_Tracker::~UDP_Tracker()
+{
+}
+
+void UDP_Tracker::run()
+{
 
 	// ----- trackerData variables. -----
 	PSMoveTracker* tracker = _trackerData->tracker;
@@ -51,8 +55,6 @@ void * run_tracker(LPVOID trackerData)
 	int totalConnectedMoves = _trackerData->totalConnectedMoves;
 	// showTracker changed by the main menu in 'move_udp_server.cpp'
 	int* showTracker = _trackerData->showTracker;
-	// finishThread is also changed by the main menu, specifically on exit.
-	int* finishThread = _trackerData->finishThread;
 	
 	// ----- Sending variables -----
 	enum PSMoveTracker_Status status;
@@ -71,7 +73,6 @@ void * run_tracker(LPVOID trackerData)
 
 	while (1)
 	{
-
 		// Update tracker image
 		psmove_tracker_update_image(tracker);
 
@@ -92,6 +93,15 @@ void * run_tracker(LPVOID trackerData)
 			else {
 				trackingMove = 0;
 			}
+
+			_stateList[c]->lock->lock();
+
+			_stateList[c]->x = tx;
+			_stateList[c]->y = ty;
+			_stateList[c]->z = tz;
+
+			_stateList[c]->lock->unlock();
+
 			if (*okayToSend) {
 				sprintf(trackerMsg, "b %d %d %f %f %f %f %f %d", posUpdateNumber, c, tx, ty, tz, ux, uy, trackingMove);
 				sendto(*udpSocket, trackerMsg, strlen(trackerMsg), 0, (SOCKADDR*)sendAddress, server_length);
@@ -107,11 +117,8 @@ void * run_tracker(LPVOID trackerData)
 		if (*okayToSend) posUpdateNumber++;
 
 		// Wait for the main menu to decide showTracker's value.
-#ifdef WIN32
-		WaitForSingleObject(trackerMutex, INFINITE);
-#else
-		pthread_mutex_lock(&trackerMutex);
-#endif
+		trackerMutex->lock();
+
 		if (*showTracker == 1) {
 			// Show an annotated stream of the tracking footage.
 			psmove_tracker_annotate(tracker);
@@ -121,15 +128,13 @@ void * run_tracker(LPVOID trackerData)
 				cvWaitKey(1);
 			}
 		}
-#ifdef WIN32
-		ReleaseMutex(trackerMutex);
-#else
-		pthread_mutex_unlock(&trackerMutex);
-#endif
+		trackerMutex->unlock();
 
-		if (*finishThread){
+		_quitMutex->lock();
+		if (_quit){
+			_quitMutex->unlock();
 			break;
 		}
+		_quitMutex->unlock();
 	}
-	return 0;
 }

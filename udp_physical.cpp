@@ -28,6 +28,7 @@
  **/
 
 #include "move_udp_server.h"
+#include "udp_physical.h"
 
 #include <cstring>
 
@@ -35,14 +36,32 @@
 #include <unistd.h>
 #endif
 
-#ifdef WIN32
-DWORD WINAPI run_udp_physical(LPVOID physicalData)
-#else
-void * run_udp_physical(LPVOID physicalData)
-#endif
-{
-	PSENDTHREADDATA _physicalData = (PSENDTHREADDATA)physicalData;
+// Formats move button presses into a simple 8 bit integer.
+int format_buttons(unsigned int currButtons) {
+	int btnsToReturn = 0;
+	if (currButtons & Btn_CROSS) btnsToReturn += (1 << 7);
+	if (currButtons & Btn_SQUARE) btnsToReturn += (1 << 6);
+	if (currButtons & Btn_TRIANGLE) btnsToReturn += (1 << 5);
+	if (currButtons & Btn_CIRCLE) btnsToReturn += (1 << 4);
+	if (currButtons & Btn_MOVE) btnsToReturn += (1 << 3);
+	if (currButtons & Btn_START) btnsToReturn += (1 << 2);
+	if (currButtons & Btn_SELECT) btnsToReturn += (1 << 1);
+	if (currButtons & Btn_PS) btnsToReturn += (1);
+	return btnsToReturn;
+}
 
+UDP_Physical::UDP_Physical(PSENDTHREADDATA data, std::vector<MoveState*> & stateList) : Thread()
+{
+    _physicalData = data;
+    _stateList = stateList;
+}
+
+UDP_Physical::~UDP_Physical()
+{
+}
+
+void UDP_Physical::run()
+{
 	// ----- physicalData variables -----
 	int totalConnectedMoves = _physicalData->totalConnectedMoves;
 	PSMove** controllers = _physicalData->controllers;
@@ -51,7 +70,6 @@ void * run_udp_physical(LPVOID physicalData)
 	SOCKET* udpSocket = _physicalData->udpSocket;
 	int* okayToSend = _physicalData->okayToSend;
 
-	int* finishThread = _physicalData->finishThread;
 	int* trackingEnabled = _physicalData->trackingEnabled;
 	// ControllerData can be changed by 'udp_recv.cpp' messages and also altered here.
 	// Protected by the controllerMutex.
@@ -69,113 +87,111 @@ void * run_udp_physical(LPVOID physicalData)
 
 	PSMove* move;
 
-	while (!*finishThread) {
-		// Checking if we know where to stream to.
-		if (*okayToSend == 1) {
-			for (c = 0; c < totalConnectedMoves; c++) {
-				move = controllers[c];
-				// Need to poll for new Move data. Returns 0 if unsucessful poll.
-				currPoll = psmove_poll(move);
-				if (currPoll) {
-					// Controller mutex
-#ifdef WIN32
-					WaitForSingleObject(controllerMutex, INFINITE);
-#else
-					pthread_mutex_lock(&controllerMutex);
-#endif
-					// Set the move light to the tracker set value.
-					if (controllerData[c].trackerLight) {
-						controllerData[c].trackerLight = 0;
-						controllerData[c].changeLight = 0;
-						if (*trackingEnabled) {
-							controllerData[c].r = controllerData[c].tr;
-							controllerData[c].g = controllerData[c].tg;
-							controllerData[c].b = controllerData[c].tb;
-						}
-						psmove_set_leds(move, controllerData[c].r, controllerData[c].g, controllerData[c].b);
-					}
-					// Set the move light to a user defined light (not recommended if tracking)
-					else if (controllerData[c].changeLight) {
-						controllerData[c].changeLight = 0;
-						psmove_set_leds(move, controllerData[c].r, controllerData[c].g, controllerData[c].b);
-					}
-					// Rumble the controller. Only runs for a certain amount of ticks, client needs to send multiple packets to keep it going.
-					if (controllerData[c].rumbleTimeout > 0) {
-						if (controllerData[c].rumbleTimeout == RUMBLE_TIMEOUT) {
-							psmove_set_rumble(move, controllerData[c].rumble);
-						}
-						controllerData[c].rumbleTimeout -= 1;
-					}
-					// Set the rumble on the controller to 0. (timeout goes to -1 to stop needlessly setting rumble to 0)
-					else {
-						if (controllerData[c].rumbleTimeout == 0) {
-							psmove_set_rumble(move, 0);
-							controllerData[c].rumbleTimeout = -1;
-						}
-					}
-					// Reset the orientation (allows user to do so in application)
-					if (controllerData[c].resetOrientation) {
-						controllerData[c].resetOrientation = 0;
-						psmove_reset_orientation(move);
-						printf("\nController %d has been calibrated.\n >", c);
-					}
-#ifdef WIN32
-					ReleaseMutex(controllerMutex);
-#else
-					pthread_mutex_unlock(&controllerMutex);
-#endif
-					// Controller mutex end
+	while (1) {
+	    for (c = 0; c < totalConnectedMoves; c++) {
+		move = controllers[c];
+		// Need to poll for new Move data. Returns 0 if unsucessful poll.
+		currPoll = psmove_poll(move);
+		if (currPoll) {
+		    // Controller mutex
+		    controllerMutex->lock();
 
-					// Read values from the controller.
-					analogVal = psmove_get_trigger(move);
-					currButtons = format_buttons(move);
-					psmove_get_accelerometer_frame(move, Frame_SecondHalf, &ax, &ay, &az);
-					psmove_get_gyroscope_frame(move, Frame_SecondHalf, &gx, &gy, &gz);
-					psmove_get_magnetometer_vector(move, &mx, &my, &mz);
-					psmove_update_leds(move);
-
-					// Check for orientation and get new values
-					if (psmove_has_orientation(move)) {
-						orientationEnabled = 1;
-						psmove_get_orientation(move, &qw, &qx, &qy, &qz);
-					}
-					else {
-						orientationEnabled = 0;
-					}
-					// Stream data for controller to the client.
-					sprintf(sendMes, "a %d %d %d %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %d %.3f %.3f %.3f %.3f %d %d %d",
-						msgNo, c, currButtons, analogVal, ax, ay, az, gx, gy, gz, mx, my, mz, orientationEnabled,
-						qw, qx, qy, qz, controllerData[c].r, controllerData[c].g, controllerData[c].b);
-					//printf("%s\n", sendMes);
-					sendto(*udpSocket, sendMes, strlen(sendMes), 0, (SOCKADDR*)sendAddress, server_length);
-					//sprintf(sendMes, "%.3f %.3f %.3f", mx, my, mz);
-					//printf("%s\n", sendMes);
-				}
+		    // Set the move light to the tracker set value.
+		    if (controllerData[c].trackerLight) {
+			controllerData[c].trackerLight = 0;
+			controllerData[c].changeLight = 0;
+			if (*trackingEnabled) {
+			    controllerData[c].r = controllerData[c].tr;
+			    controllerData[c].g = controllerData[c].tg;
+			    controllerData[c].b = controllerData[c].tb;
 			}
+			psmove_set_leds(move, controllerData[c].r, controllerData[c].g, controllerData[c].b);
+		    }
+		    // Set the move light to a user defined light (not recommended if tracking)
+		    else if (controllerData[c].changeLight) {
+			controllerData[c].changeLight = 0;
+			psmove_set_leds(move, controllerData[c].r, controllerData[c].g, controllerData[c].b);
+		    }
+		    // Rumble the controller. Only runs for a certain amount of ticks, client needs to send multiple packets to keep it going.
+		    if (controllerData[c].rumbleTimeout > 0) {
+			if (controllerData[c].rumbleTimeout == RUMBLE_TIMEOUT) {
+			    psmove_set_rumble(move, controllerData[c].rumble);
+			}
+			controllerData[c].rumbleTimeout -= 1;
+		    }
+		    // Set the rumble on the controller to 0. (timeout goes to -1 to stop needlessly setting rumble to 0)
+		    else {
+			if (controllerData[c].rumbleTimeout == 0) {
+			    psmove_set_rumble(move, 0);
+			    controllerData[c].rumbleTimeout = -1;
+			}
+		    }
+		    // Reset the orientation (allows user to do so in application)
+		    if (controllerData[c].resetOrientation) {
+			controllerData[c].resetOrientation = 0;
+			psmove_reset_orientation(move);
+			printf("\nController %d has been calibrated.\n >", c);
+		    }
+		    controllerMutex->unlock();
+		    // Controller mutex end
+
+		    // Read values from the controller.
+		    analogVal = psmove_get_trigger(move);
+		    unsigned int rawButtons = psmove_get_buttons(move);
+		    currButtons = format_buttons(rawButtons);
+		    psmove_get_accelerometer_frame(move, Frame_SecondHalf, &ax, &ay, &az);
+		    psmove_get_gyroscope_frame(move, Frame_SecondHalf, &gx, &gy, &gz);
+		    psmove_get_magnetometer_vector(move, &mx, &my, &mz);
+		    psmove_update_leds(move);
+
+		    // Check for orientation and get new values
+		    if (psmove_has_orientation(move)) {
+			orientationEnabled = 1;
+			psmove_get_orientation(move, &qw, &qx, &qy, &qz);
+		    }
+		    else {
+			orientationEnabled = 0;
+		    }
+
+		    _stateList[c]->lock->lock();
+
+		    _stateList[c]->buttons = rawButtons;
+		    _stateList[c]->qx = qx;
+		    _stateList[c]->qy = qy;
+		    _stateList[c]->qz = qz;
+		    _stateList[c]->qw = qw;
+
+		    _stateList[c]->lock->unlock();
+
+		    if (*okayToSend == 1) {
+			// Stream data for controller to the client.
+			sprintf(sendMes, "a %d %d %d %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %d %.3f %.3f %.3f %.3f %d %d %d",
+				msgNo, c, currButtons, analogVal, ax, ay, az, gx, gy, gz, mx, my, mz, orientationEnabled,
+				qw, qx, qy, qz, controllerData[c].r, controllerData[c].g, controllerData[c].b);
+			//printf("%s\n", sendMes);
+			sendto(*udpSocket, sendMes, strlen(sendMes), 0, (SOCKADDR*)sendAddress, server_length);
+			//sprintf(sendMes, "%.3f %.3f %.3f", mx, my, mz);
+			//printf("%s\n", sendMes);
+		    }
 		}
+
+		_quitMutex->lock();
+		if (_quit){
+			_quitMutex->unlock();
+			break;
+		}
+		_quitMutex->unlock();
+	    }
 #ifdef WIN32
-		Sleep(10);
+	    Sleep(10);
 #else
-		usleep(10000);
+	    usleep(10000);
 #endif
-
+	    if(*okayToSend)
+	    {
 		msgNo++;
+	    }
 	}
-	
-	return 0;
 }
 
-// Formats move button presses into a simple 8 bit integer.
-int format_buttons(PSMove *move) {
-	int currButtons = psmove_get_buttons(move);
-	int btnsToReturn = 0;
-	if (currButtons & Btn_CROSS) btnsToReturn += (1 << 7);
-	if (currButtons & Btn_SQUARE) btnsToReturn += (1 << 6);
-	if (currButtons & Btn_TRIANGLE) btnsToReturn += (1 << 5);
-	if (currButtons & Btn_CIRCLE) btnsToReturn += (1 << 4);
-	if (currButtons & Btn_MOVE) btnsToReturn += (1 << 3);
-	if (currButtons & Btn_START) btnsToReturn += (1 << 2);
-	if (currButtons & Btn_SELECT) btnsToReturn += (1 << 1);
-	if (currButtons & Btn_PS) btnsToReturn += (1);
-	return btnsToReturn;
-}
+
