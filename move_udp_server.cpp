@@ -121,7 +121,7 @@ int main(int argc, char* argv[])
 
     if(totalConnectedMoves == 0)
     {
-        printf("No Moves found, shutting down.");
+        printf("No Moves found, shutting down.\n");
         exit(1);
     }
 
