@@ -17,62 +17,62 @@ THREAD_RET thread_start(void * obj);
 class Thread
 {
     public:
-	Thread()
-	{
-	    _quit = false;
-	    _quitMutex = new Mutex();
-	}
+        Thread()
+        {
+            _quit = false;
+            _quitMutex = new Mutex();
+        }
 
-	virtual ~Thread()
-	{
-	    delete _quitMutex;
-	}
+        virtual ~Thread()
+        {
+            delete _quitMutex;
+        }
 
-	virtual void run() = 0;
+        virtual void run() = 0;
 
-	void startThread()
-	{
+        void startThread()
+        {
 #ifdef WIN32
-	    DWORD threadID;
-	    _thread = CreateThread(NULL, 0, thread_start, (void*)this, 0, &threadID);
-	    SetThreadPriority(_thread, THREAD_PRIORITY_HIGHEST);
+            DWORD threadID;
+            _thread = CreateThread(NULL, 0, thread_start, (void*)this, 0, &threadID);
+            SetThreadPriority(_thread, THREAD_PRIORITY_HIGHEST);
 #else
-	    pthread_attr_t attr;
+            pthread_attr_t attr;
 
-	    pthread_attr_init(&attr);
-	    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-	    pthread_create(&_thread,&attr,thread_start,(void*)this);
-	    pthread_attr_destroy(&attr);
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+            pthread_create(&_thread, &attr, thread_start, (void*)this);
+            pthread_attr_destroy(&attr);
 #endif
-	}
+        }
 
-	void quit()
-	{
-	    _quitMutex->lock();
-	    _quit = true;
-	    _quitMutex->unlock();
-	}
+        void quit()
+        {
+            _quitMutex->lock();
+            _quit = true;
+            _quitMutex->unlock();
+        }
 
-	void join()
-	{
-	    quit();
+        void join()
+        {
+            quit();
 #ifdef WIN32
-	    WaitForSingleObject(_thread, INFINITE);
-	    CloseHandle(_thread);
+            WaitForSingleObject(_thread, INFINITE);
+            CloseHandle(_thread);
 #else
-	    void * status;
-	    pthread_join(_thread,&status);
+            void * status;
+            pthread_join(_thread, &status);
 #endif
-	}
+        }
 
     protected:
-	bool _quit;
-	Mutex * _quitMutex;
+        bool _quit;
+        Mutex * _quitMutex;
 
 #ifdef WIN32
-	HANDLE _thread;
+        HANDLE _thread;
 #else
-	pthread_t _thread;
+        pthread_t _thread;
 #endif
 };
 

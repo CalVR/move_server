@@ -12,7 +12,10 @@
 
 #define VRPN_PORT 8701
 
-class VRPNServer : public Thread, public vrpn_Button, public vrpn_Analog, public vrpn_Tracker_Server
+class VRPNServer : public Thread,
+        public vrpn_Button,
+        public vrpn_Analog,
+        public vrpn_Tracker_Server
 {
     public:
         VRPNServer(std::vector<MoveState*> & stateList, vrpn_Connection * con);
