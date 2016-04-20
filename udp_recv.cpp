@@ -66,10 +66,20 @@ void UDP_Recv::run()
     {
         //printf("Waiting on data...\n");
         SenderAddrSize = 128;
+
+#ifdef WIN32
+		int n = recvfrom(*recvSocket, recvMsg, 512, MSG_PEEK,
+			(SOCKADDR *)SenderAddr, (socklen_t*)&SenderAddrSize);
+#else
         int n = recvfrom(*recvSocket, recvMsg, 512, MSG_DONTWAIT,
                          (SOCKADDR *)SenderAddr, (socklen_t*)&SenderAddrSize);
+#endif
         if(n > 0)
         {
+#ifdef WIN32
+			recvfrom(*recvSocket, recvMsg, 512, 0,
+				(SOCKADDR *)SenderAddr, (socklen_t*)&SenderAddrSize);
+#endif
             // Waiting on 'c'onnect message from client.
             if(!*okayToSend)
             {

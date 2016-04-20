@@ -54,10 +54,14 @@ void VRPNServer::run()
         _con->mainloop();
 
         // rate limit
+#ifdef WIN32
+		Sleep(10);
+#else
         struct timespec ts;
         ts.tv_sec = 0;
         ts.tv_nsec = 14000000;
         nanosleep(&ts, NULL);
+#endif
     }
 }
 
