@@ -27,6 +27,7 @@
  **/
 
 #include "udp_tracker.h"
+#include <cstring>
 
 UDP_Tracker::UDP_Tracker(PTRACKERDATA data, std::vector<MoveState*> & stateList) :
         Thread()
